@@ -72,12 +72,14 @@
     "relay_online_at_handoff": false
   },
   "cross_platform_ci": {
-    "status": "pending",
-    "configured": [
-      "ubuntu-latest",
-      "windows-latest",
-      "macos-latest"
-    ]
+    "status": "passed",
+    "tested_commit": "97dd98935888d1332c906ee50182722904668a47",
+    "run_url": "https://github.com/malhadeff28-gif/notion-agent-connector/actions/runs/38690909465",
+    "platforms": {
+      "windows": "passed",
+      "ubuntu": "passed",
+      "macos": "passed"
+    }
   },
   "hosting": "Local verification only; no hosted deployment",
   "limitations": [
