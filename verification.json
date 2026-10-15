@@ -1,0 +1,65 @@
+{
+  "date": "2026-10-14",
+  "release": "0.4.0",
+  "interaction": "agent_only",
+  "automated_tests": {
+    "passed": 37,
+    "failed": 0,
+    "sources": "Simulated Notion workspaces and plugin relays; real MCP HTTP and stdio clients"
+  },
+  "headless_checks": [
+    "Root returns machine-readable JSON even when HTML is requested",
+    "Former UI and setup routes return 404",
+    "Console cookies cannot authenticate management requests",
+    "OAuth callback returns JSON without UI redirect",
+    "No UI assets or launchers in source archive"
+  ],
+  "live_service_check": {
+    "version": "0.4.0",
+    "interaction": "agent_only",
+    "health_status": 200,
+    "former_ui_status": 404
+  },
+  "live_notion": {
+    "provider": "connected_notion_plugin",
+    "identity_verified": true,
+    "workspace_count": 1,
+    "read_only": true,
+    "notion_token_exported": false,
+    "indexed_resources": 100,
+    "index_state": "partial",
+    "pending_resources": 0,
+    "last_error": null,
+    "coverage_warnings": [
+      "workspace_discovery_limit",
+      "plugin_discovery_is_partial",
+      "plugin_requires_active_agent_relay",
+      "plugin_source_truncated_or_unknown_blocks",
+      "attachment_or_embed_text_not_extracted"
+    ],
+    "mcp_acceptance": {
+      "transport": "real MCP HTTP",
+      "source": "Real connected Notion workspace",
+      "retrieved_passages": 3,
+      "distinct_source_pages": 2,
+      "live_source_refetch_verified": true,
+      "read_only_tools": 11
+    },
+    "relay_online_at_handoff": false,
+    "session_requirement": "An active agent host with the connected Notion plugin must relay live reads, source verification, and refreshes. The local index persists between sessions.",
+    "not_verified": [
+      "Unattended public Notion OAuth",
+      "Two separately authorized live customer workspaces",
+      "Live Notion writes"
+    ]
+  },
+  "hosting": "Local service only; not deployed",
+  "limitations": [
+    "Lexical retrieval; no embedding-based semantic search",
+    "Initial plugin index is bounded and partial, not an entire-workspace completeness claim",
+    "Attached binary contents and comments are not extracted",
+    "One service process with persistent SQLite storage",
+    "Some hosted MCP clients need additional client-facing OAuth support"
+  ],
+  "archive": "Source only; excludes credentials, private connection state, indexed Notion content, logs, and dependencies"
+}

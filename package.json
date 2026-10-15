@@ -1,0 +1,25 @@
+{
+  "name": "notion-agent-connector",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node --env-file=.env src/index.js",
+    "test": "node --test test/*.test.js",
+    "provision": "node --env-file=.env src/provision.js",
+    "smoke": "node --env-file=.env examples/smoke.js",
+    "connect": "node --env-file=.env examples/connect.js",
+    "stdio": "node src/stdio.js",
+    "plugin": "node --env-file=.env src/plugin-cli.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
+    "@modelcontextprotocol/node": "2.1.1",
+    "zod": "^4.0.0",
+    "@modelcontextprotocol/client": "2.3.1"
+  },
+  "packageManager": "pnpm@11.25.0"
+}
