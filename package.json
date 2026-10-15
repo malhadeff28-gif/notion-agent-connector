@@ -1,8 +1,15 @@
 {
   "name": "notion-agent-connector",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/client.js",
+    "./formats": "./src/formats.js",
+    "./relay": "./src/plugin-relay.js",
+    "./diagnostics": "./src/diagnostics.js"
+  },
+  "bin": { "notion-connector-agent": "./src/agent-cli.js" },
   "engines": {
     "node": ">=24.0.0"
   },
@@ -13,6 +20,8 @@
     "smoke": "node --env-file=.env examples/smoke.js",
     "connect": "node --env-file=.env examples/connect.js",
     "stdio": "node src/stdio.js",
+    "agent": "node src/agent-cli.js",
+    "doctor": "node src/agent-cli.js doctor",
     "plugin": "node --env-file=.env src/plugin-cli.js"
   },
   "dependencies": {

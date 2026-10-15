@@ -1,65 +1,92 @@
 {
   "date": "2026-10-14",
-  "release": "0.4.0",
+  "release": "0.5.0",
   "interaction": "agent_only",
   "automated_tests": {
-    "passed": 37,
+    "passed": 77,
+    "sources": "Fixture Notion sources with real HTTP, MCP HTTP, MCP stdio and production relay library",
     "failed": 0,
-    "sources": "Simulated Notion workspaces and plugin relays; real MCP HTTP and stdio clients"
-  },
-  "headless_checks": [
-    "Root returns machine-readable JSON even when HTML is requested",
-    "Former UI and setup routes return 404",
-    "Console cookies cannot authenticate management requests",
-    "OAuth callback returns JSON without UI redirect",
-    "No UI assets or launchers in source archive"
-  ],
-  "live_service_check": {
-    "version": "0.4.0",
-    "interaction": "agent_only",
-    "health_status": 200,
-    "former_ui_status": 404
+    "platform": "Windows, Node.js 24.17.0"
   },
   "live_notion": {
-    "provider": "connected_notion_plugin",
-    "identity_verified": true,
+    "passed": true,
+    "checked_at": "2026-10-15T06:05:56.357Z",
     "workspace_count": 1,
-    "read_only": true,
-    "notion_token_exported": false,
-    "indexed_resources": 100,
-    "index_state": "partial",
-    "pending_resources": 0,
-    "last_error": null,
-    "coverage_warnings": [
-      "workspace_discovery_limit",
-      "plugin_discovery_is_partial",
-      "plugin_requires_active_agent_relay",
-      "plugin_source_truncated_or_unknown_blocks",
-      "attachment_or_embed_text_not_extracted"
+    "indexed_resources": 1,
+    "real_source_reads": 8,
+    "interfaces": [
+      {
+        "interface": "HTTP application client",
+        "passed": true,
+        "passages": 2,
+        "citations": true,
+        "live_source_checked": true
+      },
+      {
+        "interface": "MCP over HTTP",
+        "passed": true,
+        "passages": 4,
+        "citations": true,
+        "live_source_checked": true
+      },
+      {
+        "interface": "MCP over stdio",
+        "passed": true,
+        "passages": 2,
+        "citations": true,
+        "live_source_checked": true
+      },
+      {
+        "interface": "openai tool-call adapter",
+        "passed": true,
+        "passages": 2,
+        "citations": true,
+        "live_source_checked": true
+      },
+      {
+        "interface": "openai-chat tool-call adapter",
+        "passed": true,
+        "passages": 2,
+        "citations": true,
+        "live_source_checked": true
+      },
+      {
+        "interface": "anthropic tool-call adapter",
+        "passed": true,
+        "passages": 2,
+        "citations": true,
+        "live_source_checked": true
+      },
+      {
+        "interface": "gemini tool-call adapter",
+        "passed": true,
+        "passages": 2,
+        "citations": true,
+        "live_source_checked": true
+      }
     ],
-    "mcp_acceptance": {
-      "transport": "real MCP HTTP",
-      "source": "Real connected Notion workspace",
-      "retrieved_passages": 3,
-      "distinct_source_pages": 2,
-      "live_source_refetch_verified": true,
-      "read_only_tools": 11
-    },
-    "relay_online_at_handoff": false,
-    "session_requirement": "An active agent host with the connected Notion plugin must relay live reads, source verification, and refreshes. The local index persists between sessions.",
-    "not_verified": [
-      "Unattended public Notion OAuth",
-      "Two separately authorized live customer workspaces",
-      "Live Notion writes"
-    ]
+    "doctor_page_verified": true,
+    "offline_fails_closed": true,
+    "model_api_calls": 0,
+    "live_writes": 0,
+    "relay_online_at_handoff": false
   },
-  "hosting": "Local service only; not deployed",
+  "cross_platform_ci": {
+    "status": "passed",
+    "tested_commit": "97dd98935888d1332c906ee50182722904668a47",
+    "run_url": "https://github.com/malhadeff28-gif/notion-agent-connector/actions/runs/38690909465",
+    "platforms": {
+      "windows": "passed",
+      "ubuntu": "passed",
+      "macos": "passed"
+    }
+  },
+  "hosting": "Local verification only; no hosted deployment",
   "limitations": [
-    "Lexical retrieval; no embedding-based semantic search",
-    "Initial plugin index is bounded and partial, not an entire-workspace completeness claim",
-    "Attached binary contents and comments are not extracted",
-    "One service process with persistent SQLite storage",
-    "Some hosted MCP clients need additional client-facing OAuth support"
-  ],
-  "archive": "Source only; excludes credentials, private connection state, indexed Notion content, logs, and dependencies"
+    "Plugin source requires an active host with the connected Notion tools",
+    "Provider formats and local dispatch verified; no paid model API calls",
+    "One real Notion workspace and read-only operations; live OAuth and writes unverified",
+    "Some hosted MCP clients require a separate agent-facing OAuth service",
+    "Single service process with persistent SQLite; lexical search and bounded partial indexing"
+  ]
 }

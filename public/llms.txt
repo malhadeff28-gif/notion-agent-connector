@@ -3,6 +3,11 @@
 MCP endpoint: /mcp (remote HTTP; Authorization: Bearer agent-key)
 Tool discovery for HTTP agents: GET /v1/tools with the same agent key.
 Execute an HTTP tool: POST /v1/tools/{tool-name}, application/json.
+Schema formats: /v1/tools?format=openai|openai-chat|anthropic|gemini.
+OpenAPI 3.1: GET /v1/openapi.json (scoped agent authorization required).
+Readiness: GET /v1/status. Reachability alone does not prove a live source read.
+CLI diagnostics: node src/agent-cli.js doctor --key-file PATH --query TEXT.
+Provider adapters format tool calls/results but never invoke a model themselves.
 
 For a question, start with notion_get_context. It searches indexed page contents,
 headings and property values and returns source passages with citation URLs.
@@ -32,6 +37,8 @@ before another write; never blindly repeat the mutation with a new key.
 
 Source mode may be public OAuth or an existing Notion plugin. For plugin-backed
 connections, a host agent with the matching plugin account must run the relay.
+Use a separate connection-scoped relay key for the host; agent applications get
+their own read keys. Never give applications a backend management key.
 Inspect notion_index_status.provider and plugin_relay_online. An offline relay
 cannot verify sources; do not serve cached text as current. Plugin sources cite
 real page URLs, since enhanced Markdown does not guarantee raw block IDs.

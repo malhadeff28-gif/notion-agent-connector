@@ -231,7 +231,8 @@ export class WorkspaceSearch {
     this.save(key, document);
     const signature = hash(JSON.stringify({ id: document.page_id, sources: document.passages.map(p => p.source_hash), headings: document.passages.map(p => p.heading) }));
     const { offset, within } = decodeCursor(args.start_cursor, signature);
-    const passages = document.passages.slice(offset).map((p, i) => ({ citation: '[' + (offset + i + 1) + ']', block_id: p.block_id, heading: p.heading.slice(0, 300), text: i === 0 ? p.text.slice(within) : p.text, url: sourceUrl(document.page_id, p.block_id) }));
+    const sourceCheckedAt = new Date().toISOString();
+    const passages = document.passages.slice(offset).map((p, i) => ({ citation: '[' + (offset + i + 1) + ']', block_id: p.block_id, heading: p.heading.slice(0, 300), text: i === 0 ? p.text.slice(within) : p.text, url: p.type === 'plugin_markdown' ? document.url : sourceUrl(document.page_id, p.block_id), source_checked_at: sourceCheckedAt }));
     const result = fitEvidence({ page_id: document.page_id, title: document.title, url: document.url, edited_at: document.edited_at, warnings: document.warnings, has_more: false, next_cursor: null }, passages, (args.max_chars || 12000) - 300);
     let next = offset + result.passages.length, nextWithin = 0;
     const last = result.passages.at(-1);

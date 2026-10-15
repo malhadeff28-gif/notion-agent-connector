@@ -5,6 +5,7 @@ import { request as rawRequest } from 'node:http';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { Store } from '../src/store.js';
@@ -77,7 +78,8 @@ test('credentials encrypted at rest and bound to their connection', async t => {
 });
 test('customer connections, encrypted credentials, and key permissions survive a restart', t => {
   const directory = mkdtempSync(join(tmpdir(), 'notion-connector-test-'));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  let second;
+  t.after(() => { second?.close(); rmSync(directory, { recursive: true, force: true }); });
   const dbPath = join(directory, 'connector.sqlite'), encryptionKey = randomBytes(32);
   const first = new Store(dbPath, encryptionKey);
   const tenant = first.provision('Persistence customer');
@@ -85,8 +87,7 @@ test('customer connections, encrypted credentials, and key permissions survive a
   const agent = first.issueKey(tenant.tenant_id, connection.connection_id, 'read', 'Persistent reader');
   first.close();
   assert.ok(!readFileSync(dbPath).includes(Buffer.from('persistent-fixture-secret')));
-  const second = new Store(dbPath, encryptionKey);
-  t.after(() => second.close());
+  second = new Store(dbPath, encryptionKey);
   assert.equal(second.authenticate(agent.key).role, 'read');
   assert.equal(second.tokens(second.connection(tenant.tenant_id, connection.connection_id)).access_token, 'persistent-fixture-secret');
 });
@@ -231,7 +232,7 @@ test('headless service exposes machine discovery only and has no UI or cookie-ba
 test('stdio bridge exposes the scoped tools and makes real HTTP calls to the connector', async t => {
   const f = await fixture(t);
   const client = new Client({ name: 'stdio-bridge-test', version: '1.0.0' });
-  const transport = new StdioClientTransport({ command: process.execPath, args: [new URL('../src/stdio.js', import.meta.url).pathname], env: { NOTION_CONNECTOR_URL: f.cfg.appUrl, NOTION_AGENT_KEY: f.ra.key } });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('../src/stdio.js', import.meta.url))], env: { NOTION_CONNECTOR_URL: f.cfg.appUrl, NOTION_AGENT_KEY: f.ra.key } });
   t.after(() => client.close());
   await client.connect(transport);
   const listing = await client.listTools(); assert.equal(listing.tools.length, 16);

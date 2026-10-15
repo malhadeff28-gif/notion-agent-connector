@@ -24,7 +24,8 @@ try {
       const provisioned = store.provision(identity.workspace.name + ' — plugin source');
       const connection = notion.pluginBridge.bind(provisioned.tenant_id, identity);
       const agent = store.issueKey(provisioned.tenant_id, connection.connection_id, 'read', 'Notion plugin search agent');
-      state = { tenant_id: provisioned.tenant_id, connection_id: connection.connection_id, management_key: provisioned.key, agent_key: agent.key, identity };
+      const relay = store.issueKey(provisioned.tenant_id, connection.connection_id, 'relay', 'Notion plugin relay');
+      state = { tenant_id: provisioned.tenant_id, connection_id: connection.connection_id, management_key: provisioned.key, agent_key: agent.key, relay_key: relay.key, identity };
       mkdirSync('./data', { recursive: true, mode: 0o700 }); writeFileSync(statePath, JSON.stringify(state), { mode: 0o600 });
     }
     const key = { tenant_id: state.tenant_id, connection_id: state.connection_id };
@@ -49,7 +50,7 @@ try {
       output({ reindexed: rows.length });
     } else if (action === 'status') output({ workspace: state.identity.workspace.name, connection_id: state.connection_id, status: search.status(key) });
     else if (action === 'check') {
-      const args = await input(), client = new Client({ name: 'live-plugin-check', version: '0.4.0' });
+      const args = await input(), client = new Client({ name: 'live-plugin-check', version: '0.5.0' });
       try {
         await client.connect(new StreamableHTTPClientTransport(new URL(cfg.appUrl + '/mcp'), { requestInit: { headers: { Authorization: 'Bearer ' + state.agent_key } } }));
         const listed = await client.listTools();
