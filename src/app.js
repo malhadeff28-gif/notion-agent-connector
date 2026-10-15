@@ -7,14 +7,16 @@ import { Problem, hash } from './security.js';
 import { WorkspaceSearch } from './search.js';
 import { readFileSync } from 'node:fs';
 import { PluginBridge } from './plugin.js';
+import { randomUUID } from 'node:crypto';
+import { formatTools, openApiDocument, toolFormats } from './formats.js';
 
 const bearer = req => /^Bearer ([A-Za-z0-9_-]+)$/.exec(req.headers.authorization || '')?.[1] || '';
 const reply = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(data)); };
 const parse = async (req, maximum = 256_000) => {
   if (!(req.headers['content-type'] || '').startsWith('application/json')) throw new Problem(415, 'json_required', 'Use application/json.');
-  let body = '', length = 0;
-  for await (const chunk of req) { length += chunk.length; if (length > maximum) throw new Problem(413, 'body_too_large', 'Request too large.'); body += chunk; }
-  try { return JSON.parse(body); } catch { throw new Problem(400, 'invalid_json', 'Invalid JSON.'); }
+  const chunks = []; let length = 0;
+  for await (const chunk of req) { length += chunk.length; if (length > maximum) throw new Problem(413, 'body_too_large', 'Request too large.'); chunks.push(chunk); }
+  try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))); } catch { throw new Problem(400, 'invalid_json', 'Invalid JSON or UTF-8.'); }
 };
 const validate = (schema, value) => {
   const result = schema.safeParse(value);
@@ -40,28 +42,30 @@ export function createApp(store, notion, config) {
     const prior = windows.get(subject);
     const entry = !prior || now - prior.start > 60_000 ? { start: now, count: 0 } : prior;
     entry.count++; windows.set(subject, entry);
-    const cap = req.url.startsWith('/v1/plugin/') && known?.role === 'manage' ? 600 : 120;
+    const cap = req.url.startsWith('/v1/plugin/') && ['manage', 'relay'].includes(known?.role) ? 600 : 120;
     if (entry.count > cap) throw new Problem(429, 'rate_limited', 'Too many requests. Retry in a minute.');
   };
   const handler = async (req, res) => {
+    const requestId = randomUUID(); res.setHeader('X-Request-Id', requestId);
     res.setHeader('Cache-Control', 'no-store'); res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('X-Content-Type-Options', 'nosniff');
     try {
       if (!validateHost(req, res)) return;
       const origin = req.headers.origin;
       if (origin && !config.allowedOrigins.includes(origin)) throw new Problem(403, 'origin_denied', 'Origin not allowed.');
-      if (origin) { res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Vary', 'Origin'); }
-      if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS', 'Access-Control-Allow-Headers': 'Authorization, Content-Type, MCP-Protocol-Version, MCP-Session-Id' }); res.end(); return; }
+      if (origin) { res.setHeader('Access-Control-Allow-Origin', origin); res.setHeader('Vary', 'Origin'); res.setHeader('Access-Control-Expose-Headers', 'MCP-Session-Id, MCP-Protocol-Version, X-Request-Id, Retry-After'); }
+      if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS', 'Access-Control-Allow-Headers': 'Authorization, Content-Type, Accept, MCP-Protocol-Version, MCP-Session-Id, Last-Event-ID, X-Notion-Relay-Id, X-Notion-Claim-Token' }); res.end(); return; }
       limit(req);
       const url = new URL(req.url, config.appUrl), path = url.pathname;
       if (path === '/llms.txt' && req.method === 'GET') { res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end(readFileSync(new URL('../public/llms.txt', import.meta.url))); return; }
       if (path === '/' && req.method === 'GET') return reply(res, 200, {
-        service: 'notion-agent-connector', version: '0.4.0', interaction: 'agent_only',
+        service: 'notion-agent-connector', version: '0.5.0', interaction: 'agent_only',
         source_modes: ['public_notion_oauth', 'connected_notion_plugin'],
-        interfaces: { mcp: '/mcp', http_tool_discovery: '/v1/tools', http_tool_call: '/v1/tools/{name}', guide: '/llms.txt' },
+        interfaces: { mcp: '/mcp', http_tool_discovery: '/v1/tools', http_tool_call: '/v1/tools/{name}', openapi: '/v1/openapi.json', diagnostics: '/v1/status', guide: '/llms.txt' },
+        tool_schema_formats: toolFormats,
         authentication: 'Bearer agent key required for workspace access',
         starting_tool: 'notion_get_context', navigation_tools: ['notion_workspace_map', 'notion_related_pages', 'notion_read_page']
       });
-      if (path === '/health' && req.method === 'GET') return reply(res, 200, { status: 'ok', version: '0.4.0', notion_oauth_configured: Boolean(config.clientId && config.clientSecret) });
+      if (path === '/health' && req.method === 'GET') return reply(res, 200, { status: 'ok', version: '0.5.0', notion_oauth_configured: Boolean(config.clientId && config.clientSecret) });
       if (path === '/connect/notion' && req.method === 'GET') {
         const tenant = store.consumeTicket(url.searchParams.get('ticket') || '');
         const { state, browser } = store.createState(tenant);
@@ -90,16 +94,28 @@ export function createApp(store, notion, config) {
         req.auth = { token: 'verified', clientId: key.id, scopes: [key.role], extra: { key } };
         return await nodeMcp(req, res);
       }
-      if (path === '/v1/tools' && req.method === 'GET') {
+      if (path === '/v1/status' && req.method === 'GET') {
         const key = store.authenticate(bearer(req));
-        return reply(res, 200, { version: '0.4.0', tools: createToolRunner(store, notion, key).definitions.map(t => ({ name: t.name, description: t.description, input_schema: z.toJSONSchema(t.schema, { io: 'input' }), read_only: !t.write })) });
+        const connection = store.connection(key.tenant_id, key.connection_id);
+        return reply(res, 200, { service: 'notion-agent-connector', version: '0.5.0', connection_id: connection.id, provider: connection.provider,
+          role: key.role, source_ready: connection.provider === 'plugin' ? notion.pluginBridge.online(key) : null,
+          ...(connection.provider === 'plugin' ? { relay_required: true, relay_online: notion.pluginBridge.online(key) } : { source_check_required: true }),
+          available_tools: createToolRunner(store, notion, key).definitions.map(t => t.name), index: search.status(key) });
+      }
+      if (['/v1/tools', '/v1/openapi.json'].includes(path) && req.method === 'GET') {
+        const key = store.authenticate(bearer(req));
+        const definitions = createToolRunner(store, notion, key).definitions.map(t => ({ name: t.name, description: t.description, input_schema: z.toJSONSchema(t.schema, { io: 'input' }), read_only: !t.write }));
+        if (path === '/v1/openapi.json') return reply(res, 200, openApiDocument(definitions, config.appUrl));
+        const format = url.searchParams.get('format') || 'json-schema';
+        return reply(res, 200, { version: '0.5.0', format, tools: formatTools(definitions, format) });
       }
       if (path.startsWith('/v1/tools/') && req.method === 'POST') {
         const key = store.authenticate(bearer(req));
         return reply(res, 200, await createToolRunner(store, notion, key).run(path.slice('/v1/tools/'.length), await parse(req)));
       }
       if (path.startsWith('/v1/')) {
-        const key = store.authenticate(bearer(req), true);
+        const relayRoute = /^\/v1\/plugin\/([^/]+)\/(?:heartbeat|offline|requests(?:\/[^/]+)?)$/.exec(path);
+        const key = relayRoute ? store.authenticateRelay(bearer(req), relayRoute[1]) : store.authenticate(bearer(req), true);
         if (path === '/v1/notion/connect' && req.method === 'POST') {
           if (!config.clientId || !config.clientSecret) throw new Problem(503, 'notion_not_configured', 'Add your public Notion connection credentials to the server.');
           const ticket = store.createTicket(key.tenant_id);
@@ -120,10 +136,10 @@ export function createApp(store, notion, config) {
             const body = validate(z.object({ identity: z.object({ workspace: z.object({ id: z.string().uuid() }), user: z.object({ id: z.string().uuid() }) }) }), await parse(req));
             notion.pluginBridge.heartbeat(scoped, body.identity); return reply(res, 200, { relay_online: true });
           }
-          if (parts[4] === 'requests' && parts.length === 5 && req.method === 'GET') return reply(res, 200, { requests: notion.pluginBridge.pending(scoped) });
+          if (parts[4] === 'requests' && parts.length === 5 && req.method === 'GET') return reply(res, 200, { requests: notion.pluginBridge.pending(scoped, req.headers['x-notion-relay-id']) });
           if (parts[4] === 'offline' && req.method === 'POST') { notion.pluginBridge.offline(scoped); return reply(res, 200, { relay_online: false }); }
           if (parts[4] === 'requests' && parts.length === 6 && req.method === 'POST') {
-            const body = await parse(req, 2_000_000); notion.pluginBridge.complete(scoped, parts[5], body); return reply(res, 200, { accepted: true });
+            const body = await parse(req, 2_000_000); notion.pluginBridge.complete(scoped, parts[5], body, req.headers['x-notion-claim-token']); return reply(res, 200, { accepted: true });
           }
         }
         if (path === '/v1/connections' && req.method === 'GET') return reply(res, 200, { connections: store.db.prepare('SELECT id, workspace_id, workspace_name, active, provider FROM connections WHERE tenant_id=?').all(key.tenant_id) });
@@ -135,16 +151,19 @@ export function createApp(store, notion, config) {
         }
         if (path === '/v1/keys' && req.method === 'GET') return reply(res, 200, { keys: store.db.prepare('SELECT id, connection_id, role, label, active FROM keys WHERE tenant_id=?').all(key.tenant_id) });
         if (path === '/v1/keys' && req.method === 'POST') {
-          const body = validate(z.object({ connection_id: z.string().uuid(), role: z.enum(['read', 'write']).default('read'), label: z.string().min(1).max(100) }), await parse(req));
+          const body = validate(z.object({ connection_id: z.string().uuid(), role: z.enum(['read', 'write', 'relay']).default('read'), label: z.string().min(1).max(100) }), await parse(req));
           const connection = store.connection(key.tenant_id, body.connection_id);
           if (connection.provider === 'plugin' && body.role === 'write') throw new Problem(403, 'plugin_read_only_adapter', 'Plugin-backed search connections issue read-only agent keys.');
+          if (body.role === 'relay' && connection.provider !== 'plugin') throw new Problem(400, 'not_plugin_connection', 'Relay keys require a plugin-backed connection.');
           const issued = store.issueKey(key.tenant_id, body.connection_id, body.role, body.label);
           store.log(key, 'issue_agent_key', 'success', body.connection_id);
           return reply(res, 201, issued);
         }
         if (path.startsWith('/v1/keys/') && req.method === 'DELETE') {
+          const revoked = store.db.prepare('SELECT role, connection_id FROM keys WHERE id=? AND tenant_id=? AND role<>?').get(path.slice('/v1/keys/'.length), key.tenant_id, 'manage');
           const result = store.db.prepare('UPDATE keys SET active=0 WHERE id=? AND tenant_id=? AND role<>?').run(path.slice('/v1/keys/'.length), key.tenant_id, 'manage');
           if (!result.changes) throw new Problem(404, 'key_not_found', 'Agent key unavailable.');
+          if (revoked?.role === 'relay' && store.db.prepare('SELECT active FROM connections WHERE id=?').get(revoked.connection_id)?.active) notion.pluginBridge.offline({ ...key, connection_id: revoked.connection_id });
           store.log(key, 'revoke_agent_key', 'success');
           return reply(res, 200, { revoked: true });
         }
@@ -170,7 +189,8 @@ export function createApp(store, notion, config) {
       }
       throw new Problem(404, 'not_found', 'Route not found.');
     } catch (e) {
-      if (!res.headersSent) reply(res, e instanceof Problem ? e.status : 500, { error: e.code || 'internal_error', message: e instanceof Problem ? e.message : 'The connector could not complete this request.' });
+      if (e.status === 429) res.setHeader('Retry-After', '60');
+      if (!res.headersSent) reply(res, e instanceof Problem ? e.status : 500, { error: e instanceof Problem ? e.code : 'internal_error', message: e instanceof Problem ? e.message : 'The connector could not complete this request.', request_id: requestId });
       else res.end();
     }
   };

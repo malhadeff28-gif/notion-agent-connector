@@ -45,6 +45,12 @@ export class Store {
     if (!management) this.connection(key.tenant_id, key.connection_id);
     return key;
   }
+  authenticateRelay(value, connectionId) {
+    const key = this.db.prepare('SELECT * FROM keys WHERE digest=? AND active=1').get(hash(value || ''));
+    if (!key || !['manage', 'relay'].includes(key.role) || (key.role === 'relay' && key.connection_id !== connectionId)) throw new Problem(401, 'unauthorized', 'A valid key for this plugin relay is required.');
+    this.connection(key.tenant_id, connectionId);
+    return key;
+  }
   connection(tenantId, id) {
     const row = this.db.prepare('SELECT * FROM connections WHERE id=? AND tenant_id=? AND active=1').get(id, tenantId);
     if (!row) throw new Problem(404, 'connection_not_found', 'Connection unavailable.');

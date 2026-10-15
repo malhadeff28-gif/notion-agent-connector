@@ -3,12 +3,33 @@ import { hash, Problem } from './security.js';
 import { normalizeId, sourceUrl, splitPassages } from './documents.js';
 
 const methods = new Set(['fetch', 'search', 'list_private_pages', 'list_shared_pages', 'list_recent_pages', 'query_rows']);
+const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const sourceStatus = value => {
+  const status = value?.status ?? value?.statusCode ?? value?.status_code ?? value?.error?.status;
+  if (Number.isInteger(status) && status >= 400 && status <= 599) return status;
+  const code = typeof value?.error === 'string' ? value.error : value?.error?.code || value?.code;
+  return new Map([['unauthorized', 401], ['restricted_resource', 403], ['object_not_found', 404], ['rate_limited', 429]]).get(code) || 502;
+};
+const sourceError = value => new Problem(sourceStatus(value), 'plugin_source_error', 'The Notion plugin could not read this source.');
 export function pluginPayload(result) {
-  if (result?.isError) throw new Problem(502, 'plugin_source_error', 'The Notion plugin could not read this source.');
-  if (result?.structuredContent) return result.structuredContent;
-  const text = result?.content?.filter(c => c.type === 'text').map(c => c.text).join('\n');
-  if (text) { try { return JSON.parse(text); } catch { throw new Problem(502, 'invalid_plugin_result', 'Expected a structured Notion plugin result.'); } }
-  return result;
+  const text = Array.isArray(result?.content) ? result.content.filter(c => c?.type === 'text' && typeof c.text === 'string').map(c => c.text).join('\n') : '';
+  let data = result?.structuredContent;
+  if (data === undefined && text) {
+    try { data = JSON.parse(text); } catch {
+      if (result?.isError) throw sourceError(result);
+      throw new Problem(502, 'invalid_plugin_result', 'Expected a structured Notion plugin result.');
+    }
+  }
+  data ??= result;
+  if (result?.isError || data?.isError || data?.error) throw sourceError(data);
+  if (!object(data)) throw new Problem(502, 'invalid_plugin_result', 'Expected a structured Notion plugin result.');
+  return data;
+}
+function sourceIdentity(data, requestedId) {
+  const expected = normalizeId(requestedId), returned = normalizeId(data.id);
+  // Some plugin versions omit the ID; when present it must bind the answer to the requested source.
+  if (data.id !== undefined && (!returned || (expected && returned !== expected))) throw new Problem(502, 'plugin_source_mismatch', 'The Notion plugin returned a different source than requested.');
+  return returned || expected;
 }
 function reference(value) {
   const clean = String(value || '').replace(/^\{\{|\}\}$/g, '');
@@ -22,7 +43,7 @@ function reference(value) {
 }
 /** Preserve actual enhanced-Markdown extracts and page citations; never invent block IDs. */
 export function pluginDocument(raw, requestedId, kind = 'page') {
-  const data = pluginPayload(raw), id = normalizeId(data.id) || normalizeId(requestedId);
+  const data = pluginPayload(raw), id = sourceIdentity(data, requestedId);
   if (!id || typeof data.text !== 'string') throw new Problem(502, 'invalid_plugin_page', 'The plugin did not return readable page content.');
   const title = String(data.title || 'Untitled'), text = data.text;
   const body = text.match(/<content>\n?([\s\S]*)\n?<\/content>/)?.[1] ?? text;
@@ -30,6 +51,7 @@ export function pluginDocument(raw, requestedId, kind = 'page') {
   const parent = reference(text.match(/<parent-page\s+url="([^"]+)"/)?.[1]);
   const edges = [], discovered = [], warnings = ['plugin_discovery_is_partial', 'plugin_requires_active_agent_relay'];
   if (data.truncated || data.unknown_block_count) warnings.push('plugin_source_truncated_or_unknown_blocks');
+  if (props.length + body.length + 1 > 1_500_000) warnings.push('extracted_text_limit');
   if (/<(?:pdf|file|audio|video|embed|unknown)\b/.test(body)) warnings.push('attachment_or_embed_text_not_extracted');
   if (data.metadata?.type) kind = data.metadata.type === 'dataSource' ? 'data_source' : data.metadata.type === 'database' ? 'database' : kind;
   for (const match of text.matchAll(/<(page|mention-page|parent-page|database|mention-database|data-source|mention-data-source|folder)\b[^>]*\burl="([^"]+)"/g)) {
@@ -62,6 +84,10 @@ export class PluginBridge {
       CREATE TABLE IF NOT EXISTS plugin_relays(connection_id TEXT PRIMARY KEY REFERENCES connections(id),workspace_id TEXT NOT NULL,user_id TEXT NOT NULL,heartbeat INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS plugin_requests(id TEXT PRIMARY KEY,connection_id TEXT NOT NULL REFERENCES connections(id),operation TEXT NOT NULL,args TEXT NOT NULL,state TEXT NOT NULL,reply TEXT,created INTEGER NOT NULL);
     `);
+    const columns = this.db.prepare('PRAGMA table_info(plugin_requests)').all();
+    for (const [name, type] of [['relay_id', 'TEXT'], ['claim_token', 'TEXT'], ['claim_expires', 'INTEGER']]) {
+      if (!columns.some(column => column.name === name)) this.db.exec(`ALTER TABLE plugin_requests ADD COLUMN ${name} ${type}`);
+    }
   }
   online(key) {
     return Boolean(this.db.prepare('SELECT heartbeat FROM plugin_relays WHERE connection_id=?').get(key.connection_id)?.heartbeat > Date.now() - 90_000);
@@ -85,7 +111,8 @@ export class PluginBridge {
   offline(key) {
     this.store.connection(key.tenant_id, key.connection_id);
     this.db.prepare('UPDATE plugin_relays SET heartbeat=0 WHERE connection_id=?').run(key.connection_id);
-    for (const r of this.pending(key)) this.complete(key, r.id, { error: 'plugin_relay_offline', status: 503 });
+    // Include leased requests so callers fail promptly even while their relay was reading a source.
+    this.db.prepare("UPDATE plugin_requests SET state='complete',reply=? WHERE connection_id=? AND state='pending'").run(JSON.stringify({ error: 'plugin_relay_offline', status: 503 }), key.connection_id);
   }
   async call(key, operation, args = {}) {
     this.store.connection(key.tenant_id, key.connection_id);
@@ -94,7 +121,7 @@ export class PluginBridge {
     if (this.db.prepare("SELECT count(*) n FROM plugin_requests WHERE connection_id=? AND state='pending'").get(key.connection_id).n >= 40) throw new Problem(429, 'plugin_relay_busy', 'Too many pending plugin requests.');
     const id = randomUUID();
     this.db.prepare('DELETE FROM plugin_requests WHERE created<?').run(Date.now() - 300_000);
-    this.db.prepare("INSERT INTO plugin_requests VALUES(?,?,?,?,'pending',NULL,?)").run(id, key.connection_id, operation, JSON.stringify(args), Date.now());
+    this.db.prepare("INSERT INTO plugin_requests(id,connection_id,operation,args,state,reply,created) VALUES(?,?,?,?,'pending',NULL,?)").run(id, key.connection_id, operation, JSON.stringify(args), Date.now());
     try {
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
@@ -103,7 +130,7 @@ export class PluginBridge {
         if (!row) throw new Problem(503, 'plugin_request_expired', 'Plugin request expired.');
         if (row.state === 'complete') {
           const result = JSON.parse(row.reply);
-          if (result.error) throw new Problem(result.status || 502, result.error, 'The plugin could not read this source.');
+          if (result.error) throw new Problem(sourceStatus(result), typeof result.error === 'string' && /^[a-z][a-z0-9_]{0,99}$/.test(result.error) ? result.error : 'plugin_source_error', 'The plugin could not read this source.');
           return result;
         }
         await new Promise(r => setTimeout(r, 100));
@@ -111,13 +138,21 @@ export class PluginBridge {
       throw new Problem(503, 'plugin_relay_timeout', 'The Notion plugin relay did not answer.');
     } finally { this.db.prepare('DELETE FROM plugin_requests WHERE id=?').run(id); }
   }
-  pending(key) {
+  pending(key, relayId) {
     this.store.connection(key.tenant_id, key.connection_id);
-    return this.db.prepare("SELECT id,operation,args FROM plugin_requests WHERE connection_id=? AND state='pending' ORDER BY created LIMIT 10").all(key.connection_id).map(r => ({ ...r, args: JSON.parse(r.args) }));
+    if (!relayId) return this.db.prepare("SELECT id,operation,args FROM plugin_requests WHERE connection_id=? AND state='pending' AND claim_token IS NULL ORDER BY created LIMIT 10").all(key.connection_id).map(r => ({ ...r, args: JSON.parse(r.args) }));
+    if (typeof relayId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(relayId)) throw new Problem(400, 'invalid_relay_id', 'Supply a valid relay instance ID.');
+    // One atomic UPDATE prevents competing pollers from claiming the same source read.
+    const now = Date.now(), claimToken = randomUUID();
+    const rows = this.db.prepare("UPDATE plugin_requests SET relay_id=?,claim_token=?,claim_expires=? WHERE id IN (SELECT id FROM plugin_requests WHERE connection_id=? AND state='pending' AND (claim_token IS NULL OR claim_expires<=?) ORDER BY created LIMIT 1) RETURNING id,operation,args,claim_token,claim_expires").all(relayId, claimToken, now + 55_000, key.connection_id, now);
+    return rows.map(r => ({ ...r, args: JSON.parse(r.args) }));
   }
-  complete(key, id, result) {
+  complete(key, id, result, claimToken) {
     this.store.connection(key.tenant_id, key.connection_id);
-    const changed = this.db.prepare("UPDATE plugin_requests SET state='complete',reply=? WHERE id=? AND connection_id=? AND state='pending'").run(JSON.stringify(result), id, key.connection_id);
+    if (!object(result)) throw new Problem(400, 'invalid_plugin_result', 'A plugin reply must be a structured object.');
+    if (Buffer.byteLength(JSON.stringify(result)) > 2_000_000) throw new Problem(413, 'plugin_result_too_large', 'The plugin reply exceeds the maximum size.');
+    if (claimToken !== undefined && (typeof claimToken !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(claimToken))) throw new Problem(400, 'invalid_claim_token', 'Supply a valid request claim token.');
+    const changed = this.db.prepare("UPDATE plugin_requests SET state='complete',reply=? WHERE id=? AND connection_id=? AND state='pending' AND ((claim_token IS NULL AND ? IS NULL) OR (claim_token=? AND claim_expires>?))").run(JSON.stringify(result), id, key.connection_id, claimToken ?? null, claimToken ?? null, Date.now());
     if (!changed.changes) throw new Problem(404, 'plugin_request_not_found', 'Plugin request is no longer pending.');
   }
   async document(key, id, kind = 'page') { return pluginDocument(await this.call(key, 'fetch', { id: kind === 'data_source' ? 'collection://' + id : id }), id, kind); }
@@ -125,7 +160,16 @@ export class PluginBridge {
     if (path === '/search') {
       if (body.query) {
         const data = pluginPayload(await this.call(key, 'search', { query: body.query, page_size: body.page_size || 20 }));
-        return { results: (data.results || []).map(r => ({ ...r, id: reference(r.url)?.id || normalizeId(r.id), object: r.type === 'database' ? 'database' : 'page' })), has_more: false, next_cursor: null };
+        if (!Array.isArray(data.results)) throw new Problem(502, 'invalid_plugin_result', 'The plugin did not return a search result list.');
+        const results = []; let excludedExternalSources = 0;
+        for (const result of data.results) {
+          // Notion AI can also search Mail, Slack, and Calendar. This connection
+          // authorizes Notion resources only; a UUID alone does not prove origin.
+          const ref = object(result) && reference(result.url);
+          if (!ref?.id) { excludedExternalSources++; continue; }
+          results.push({ ...result, id: ref.id, object: ref.kind === 'data_source' ? 'data_source' : result.type === 'database' ? 'database' : 'page' });
+        }
+        return { results, has_more: false, next_cursor: null, excluded_external_sources: excludedExternalSources };
       }
       let cursor = body.start_cursor ? JSON.parse(Buffer.from(body.start_cursor, 'base64url')) : { stage: 0 };
       const ops = ['list_private_pages', 'list_shared_pages', 'list_recent_pages'];
@@ -141,7 +185,11 @@ export class PluginBridge {
     }
     if (method === 'GET') {
       const ref = path.match(/^\/(pages|databases|data_sources)\/([^/?]+)$/);
-      if (ref) return pluginPayload(await this.call(key, 'fetch', { id: ref[1] === 'data_sources' ? 'collection://' + ref[2] : ref[2] }));
+      if (ref) {
+        const data = pluginPayload(await this.call(key, 'fetch', { id: ref[1] === 'data_sources' ? 'collection://' + ref[2] : ref[2] }));
+        sourceIdentity(data, ref[2]);
+        return data;
+      }
     }
     throw new Problem(403, 'plugin_read_only_adapter', 'Use the native Notion plugin for this operation; the search-layer plugin adapter is read-only.');
   }

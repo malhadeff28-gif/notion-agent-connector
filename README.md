@@ -11,6 +11,8 @@ The agent decides what to search, which related pages to follow, and what eviden
 
 **Status:** the headless layer has been connected to a real workspace through its existing Notion plugin and a live MCP context request has been verified. The local index contains real fetched sources. Plugin access is agent-mediated: the connected plugin is not a portable server OAuth credential. Standalone customer OAuth and hosting remain separate, unverified deployment paths.
 
+**New in 0.5:** model-independent application clients, OpenAI/Anthropic/Gemini tool adapters, scoped OpenAPI discovery, a reconnecting MCP stdio bridge, connection diagnostics, connection-scoped relay keys, and a resilient plugin relay. [Application integration guide](docs/application-integration.md) covers setup, examples and compatibility limits. Local verification includes eight real Notion source reads through HTTP, MCP HTTP, stdio and the provider-format dispatch adapters. No model API calls were made.
+
 ## Existing Notion plugin mode
 
 This mode uses the Notion connection already available to the agent. It does not require creating another Notion OAuth app or extracting a plugin token. There is no UI.
@@ -23,11 +25,11 @@ Agent with Notion plugin ⇄ authenticated relay ⇄ headless index / navigation
 
 The agent verifies the plugin's workspace and user with `get_self`. A backend management key binds that identity to an isolated connection using `POST /v1/plugin/connect`. That connection is read-only and stores no Notion access token. The relay answers a fixed set of read operations using the plugin's actual tools. Each search result is revalidated by fetching the source page again through the plugin. Plugin-derived citations link to real pages; the adapter does not invent block anchors.
 
-`examples/plugin-agent-relay.js` is the host integration: pass a `callNotion` callback that invokes the connected plugin's tools, plus that connection's backend management key. The callback must be scoped to the authenticated user's plugin account. Content search follows that connection's tool-access map; supply `contentSearch` if the host uses an entitled AI search tool. Raw block/property operations and writes remain available through the native plugin or the standalone OAuth provider rather than being falsely emulated.
+`src/plugin-relay.js` is the host integration library, also exported from `examples/plugin-agent-relay.js`: pass a `callNotion` callback that invokes the connected plugin's tools, plus a connection-scoped `relayKey`. The callback must be scoped to the authenticated user's plugin account. Content search follows the live tool-access map and selects entitled AI search automatically; an optional `contentSearch` callback can adapt a host's search interface. Raw block/property operations and writes remain available through the native plugin or the standalone OAuth provider rather than being falsely emulated.
 
 **An agent host with the Notion plugin must be active to fetch, refresh, or verify plugin-backed content.** While the relay is offline, the search layer refuses to return cached text as current. The local index persists and resumes when the relay returns. This is a live plugin-backed connection during an agent session, not an unattended export of the plugin's authentication.
 
-The relay API is backend-authenticated and connection-scoped:
+Binding requires a backend management key. Heartbeat, request polling/completion and offline operations accept a connection-scoped relay key (or the management key for older hosts):
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -37,7 +39,7 @@ The relay API is backend-authenticated and connection-scoped:
 | `POST /v1/plugin/:connectionId/requests/:requestId` | Return a plugin result |
 | `POST /v1/plugin/:connectionId/offline` | End the relay lease and fail pending reads closed |
 
-`src/plugin-cli.js` provides agent-side setup, status, import, heartbeat, request completion, and a real MCP read check. Its connection/agent keys are saved only in private `data/plugin-session.json`, which is excluded from archives. No Notion plugin token is copied to the service.
+`src/plugin-cli.js` provides agent-side setup, status, import, heartbeat, request completion, and a real MCP read check. New setup creates separate management, relay and agent keys, saved only in private `data/plugin-session.json`, which is excluded from archives. No Notion plugin token is copied to the service. Existing sessions can issue a relay key through `POST /v1/keys` with `role: "relay"`.
 
 Plugin discovery follows private/shared/recent roots, actual child references, and a bounded data-source row batch. It is explicitly partial: listing these roots is not proof of enumerating every page in a workspace. The initial pass defaults to 100 resources (`PLUGIN_INDEX_LIMIT`); source truncation, unknown blocks and row limits remain visible. Native plugin search can still discover information beyond that initial local index. Advanced Notion AI search is not required for the current basic-plugin path.
 
@@ -56,6 +58,9 @@ Plugin discovery follows private/shared/recent roots, actual child references, a
 | Automatic refresh | Starts indexing after connection, persists checkpoints, discovers data source rows, skips unchanged page crawls, and queues refreshes after agent writes |
 | Permission checks | Rechecks selected page metadata and content blocks live before returning cached passages; inaccessible or changed sources are omitted and refreshed/purged |
 | Agent compatibility | Remote HTTP MCP, a local stdio bridge, and an ordinary HTTP tool API with schema discovery |
+| LLM tool adapters | OpenAI Responses/Chat Completions, Anthropic Messages and Gemini GenerateContent schemas, call dispatch and native result envelopes |
+| Application diagnostics | CLI doctor and scoped readiness endpoint distinguish reachable services from a verified source read |
+| Relay recovery | Bounded concurrency/retries, cancellation, independent heartbeats, request claims and source identity verification |
 
 This is **local lexical search**, not embedding-based semantic search. No external embedding or AI provider receives your page content. Source passages remain exact extracts; the connector does not manufacture an answer or summary.
 
@@ -168,6 +173,8 @@ For clients that launch local MCP programs, the stdio bridge forwards the same s
 
 The wrapper format is an example; use the schema your agent host expects. Node.js and this package's dependencies must be available on the computer running the bridge. The bridge never loads the server's encryption key or Notion token; it knows only that agent's connector key. Remote connections require HTTPS. The local server/bridge must be running while the agent uses them.
 
+Prefer a private plain key file over embedding the key in config: use `NOTION_AGENT_KEY_FILE` instead of `NOTION_AGENT_KEY`. Generate a configuration with `pnpm agent config --key-file /absolute/private/agent-key.txt`. Run `pnpm doctor --key-file /absolute/private/agent-key.txt --query 'release checklist'` for a real source-read check. See the [application guide](docs/application-integration.md) for API clients and tool adapters.
+
 The service does not implement the **MCP client-facing OAuth authorization server** required by some hosted connector directories/chat products. Notion workspace OAuth and agent-facing MCP authentication are separate layers. Those hosts require additional client-facing OAuth work and any applicable directory review. Universal host compatibility is not claimed.
 
 `examples/smoke.js` performs a real read-only MCP check after you connect a workspace and set `AGENT_KEY`. It lists tools and counts search results without printing page contents.
@@ -199,6 +206,8 @@ Content-Type: application/json
 {"query":"What did we decide about the launch?","max_chars":12000}
 ```
 
+Use `GET /v1/tools?format=openai`, `openai-chat`, `anthropic`, or `gemini` for provider tool definitions. `GET /v1/openapi.json` returns scoped OpenAPI 3.1; `GET /v1/status` reports connection readiness without page content. All require the same agent key. Format conversion and dispatch do not invoke a model API themselves.
+
 `GET /` returns a machine-readable capability manifest. `/llms.txt` provides an agent-facing guide. Neither endpoint exposes customer data; workspace access requires an agent key.
 
 ### Control API
@@ -210,7 +219,7 @@ These endpoints require a management key held by your backend. Browser session c
 | POST | `/v1/notion/connect` | Issue a one-use browser link, valid for ten minutes |
 | GET | `/v1/connections` | List the customer's connections |
 | DELETE | `/v1/connections/:id` | Disable access, purge active index records, attempt Notion revocation, erase stored tokens |
-| POST | `/v1/keys` | Issue a read or write agent key for an owned connection |
+| POST | `/v1/keys` | Issue a read/write agent key, or a relay key for an owned plugin connection |
 | GET | `/v1/keys` | List key metadata without returning key secrets |
 | DELETE | `/v1/keys/:id` | Revoke an agent key |
 | GET | `/v1/index/:connectionId` | Inspect indexing status |
@@ -248,4 +257,4 @@ Before inviting customers, configure real public-connection credentials, product
 
 Headless checks verify JSON discovery even when HTML is requested, removal of UI routes, rejection of old console cookies, and a JSON OAuth callback with no dashboard redirect.
 
-Plugin adapter tests also cover account binding without token export, live relay verification, page-level citations, source changes/revocation, offline fail-closed behavior, XML-noise filtering, and connection-scoped replies. Live acceptance was read-only in one real workspace; multiple real customer authorizations and writes have not been tested.
+Plugin adapter tests also cover account binding without token export, live relay verification, page-level citations, source changes/revocation, offline fail-closed behavior, XML-noise filtering, source identity mismatches, mixed-source search filtering, request claims and scoped relay credentials. Application tests exercise actual MCP/HTTP/stdio transports, service restart recovery, model tool-result envelopes, Unicode across TCP chunks, bounded reads, cancellation and no automatic write replay. GitHub Actions runs the suite on Windows, Linux and macOS. Live acceptance remains read-only in one real workspace; multiple real customer authorizations, model API calls and writes have not been tested. See `verification.json` for the current evidence.
