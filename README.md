@@ -1,15 +1,13 @@
-# Notion Agent Search
+# Notion Agent Connector
 
-A headless layer over Notion that only agents navigate through MCP or HTTP tools. It indexes shared workspace content, maps relationships, and retrieves compact evidence with citations. There is no dashboard, search screen, browser session, or human-facing launcher.
+When an AI agent uses a Notion workspace to answer a question, the reader needs to see which page supports the answer and whether that page is still accessible. This read-only plugin workflow finds passages, rechecks their source pages in Notion, and returns the text with citations. Agents access it over MCP or HTTP.
+
+**Recorded live check.** On October 14, 2026, an MCP request retrieved three passages from two source pages in one connected workspace. The connector fetched the pages again before returning them. The initial index covered 100 resources and was partial. The plugin path requires an active agent relay. Unattended OAuth and a hosted deployment remain unverified. [Verification record](verification.json) · [Plugin relay tests](test/plugin.test.js)
 
 ```text
-Agent → MCP / tool API → Search index + workspace graph → Customer's Notion authorization
-                       ← Cited passages + related pages ← Live permission/source checks
+Agent → MCP / HTTP → Search index → Matching passages → Live source check in Notion
+      ← Cited passages and coverage limits             ← Currently accessible pages
 ```
-
-The agent decides what to search, which related pages to follow, and what evidence to bring into its context. Notion remains the source of truth. The connector stores an index and navigation graph; it does not create a second human workspace.
-
-**Status:** the headless layer has been connected to a real workspace through its existing Notion plugin and a live MCP context request has been verified. The local index contains real fetched sources. Plugin access is agent-mediated: the connected plugin is not a portable server OAuth credential. Standalone customer OAuth and hosting remain separate, unverified deployment paths.
 
 ## Existing Notion plugin mode
 
@@ -79,10 +77,10 @@ Every returned cached passage passes a live source check. OAuth sources use page
 
 ### Access from another device
 
-Sign in to the GitHub account that owns this private repository, then clone it:
+Clone the public source:
 
 ```sh
-gh repo clone malhadeff28-gif/notion-agent-connector
+git clone https://github.com/malhadeff28-gif/notion-agent-connector.git
 cd notion-agent-connector
 ```
 
